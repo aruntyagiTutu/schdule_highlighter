@@ -56,10 +56,11 @@ def format_duration(delta_seconds: int) -> str:
     return " ".join(parts)
 
 def find_next_activity(schedule, current_time):
-    upcoming = [(s, e, a) for (s, e, a) in schedule if s > current_time]
+    # schedule items: (slot_id, start, end, activity)
+    upcoming = [(slot_id, s, e, a) for (slot_id, s, e, a) in schedule if s > current_time]
     if not upcoming:
         return None
-    upcoming.sort(key=lambda x: x[0])
+    upcoming.sort(key=lambda x: x[1])  # sort by start time
     return upcoming[0]
 
 def parse_time_str(value: str) -> time:
@@ -69,52 +70,67 @@ def parse_time_str(value: str) -> time:
 def get_date_str() -> str:
     return now().strftime("%Y-%m-%d")
 
-def load_overrides(plans_dir: Path, date_str: str) -> dict:
+def load_overrides(plans_dir: Path, date_str: str) -> tuple[dict, dict]:
     """
     Load per-date overrides from plans/<YYYY-MM-DD>.json
-    Schema (array of items):
+    Schema (array of items), supports either ID-based or start-time-based overrides:
       [
-        {"start": "07:30", "activity": "Prepare slides for demo"},
-        {"start": "13:45", "activity": "Ship personal project MVP"}
+        {"id": 4, "activity": "Prepare slides for demo"},
+        {"id": 13, "activity": "Ship personal project MVP"},
+        // legacy support:
+        {"start": "07:30", "activity": "Prepare slides for demo"}
       ]
-    Only 'start' time is required; it should match a default slot's start.
+    Prefer 'id' when present.
     """
     overrides_path = plans_dir / f"{date_str}.json"
     if not overrides_path.exists():
-        return {}
+        return {}, {}
     try:
         data = json.loads(overrides_path.read_text(encoding="utf-8"))
-        overrides = {}
+        by_id: dict[int, str] = {}
+        by_start: dict[time, str] = {}
         for item in data:
+            # ID-based override
+            if "id" in item and "activity" in item:
+                try:
+                    by_id[int(item["id"])] = str(item["activity"])
+                    continue
+                except Exception:
+                    pass
+            # Start-time based override (legacy)
             start_str = item.get("start")
             activity = item.get("activity")
             if not start_str or not activity:
                 continue
             try:
-                start_t = parse_time_str(start_str)
-                overrides[start_t] = str(activity)
+                start_t = parse_time_str(str(start_str))
+                by_start[start_t] = str(activity)
             except Exception:
                 # Skip malformed entries silently
                 continue
-        return overrides
+        return by_id, by_start
     except Exception:
         # If file is malformed, ignore overrides
-        return {}
+        return {}, {}
 
-def merge_schedule_with_overrides(schedule, overrides: dict):
+def merge_schedule_with_overrides(schedule, overrides_by_id: dict, overrides_by_start: dict):
     """
-    Replace the activity of any default slot whose start time matches an override.
+    Replace the activity of any default slot using ID-based overrides.
+    Fall back to start-time overrides for legacy files.
     """
     merged = []
-    for start, end, activity in schedule:
-        if start in overrides:
-            merged.append((start, end, overrides[start]))
+    for slot_id, start, end, activity in schedule:
+        if slot_id in overrides_by_id:
+            merged.append((slot_id, start, end, overrides_by_id[slot_id]))
+        elif start in overrides_by_start:
+            merged.append((slot_id, start, end, overrides_by_start[start]))
         else:
-            merged.append((start, end, activity))
+            merged.append((slot_id, start, end, activity))
     return merged
 
 def build_schedule(mode, day):
-    return [
+    # Each slot has a stable numeric ID (1-based)
+    slots = [
 
         # Morning
         (time(5,30), time(6,30), "Morning routine: tea, freshen up, shower"),
@@ -173,6 +189,11 @@ def build_schedule(mode, day):
         (time(21,15), time(22,15), "Reading (monthly book goal)"),
         (time(22,15), time(23,59), "Wind down / sleep prep"),
     ]
+    # Attach stable slot IDs (1-based)
+    schedule_with_ids = []
+    for idx, (s, e, a) in enumerate(slots, start=1):
+        schedule_with_ids.append((idx, s, e, a))
+    return schedule_with_ids
 
 def print_current_activity(mode):
     current_time = now().time()
@@ -182,9 +203,9 @@ def print_current_activity(mode):
     # Per-date plan overrides
     plans_dir = Path(__file__).parent / "plans"
     date_str = get_date_str()
-    overrides = load_overrides(plans_dir, date_str)
-    schedule = merge_schedule_with_overrides(schedule, overrides)
-    for start, end, activity in schedule:
+    overrides_by_id, overrides_by_start = load_overrides(plans_dir, date_str)
+    schedule = merge_schedule_with_overrides(schedule, overrides_by_id, overrides_by_start)
+    for slot_id, start, end, activity in schedule:
         if in_range(start, end, current_time):
             print(f"🔥 NOW {get_icon(activity)} {current_time.strftime('%H:%M')} → {activity}")
             break
@@ -194,7 +215,7 @@ def print_current_activity(mode):
     # Next activity (today)
     next_item = find_next_activity(schedule, current_time)
     if next_item:
-        next_start, _next_end, next_activity = next_item
+        _next_slot_id, next_start, _next_end, next_activity = next_item
         now_dt = now()
         next_dt = datetime.combine(now_dt.date(), next_start)
         remaining_seconds = max(0, int((next_dt - now_dt).total_seconds()))

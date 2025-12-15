@@ -1,6 +1,6 @@
 [
-  { "start": "07:30", "activity": "Prepare slides for demo (Q4 sync)" },
-  { "start": "13:45", "activity": "Ship personal project MVP" },
-  { "start": "20:30", "activity": "Finish API integration" }
+  { "id": 4,  "activity": "Prepare slides for demo (Q4 sync)" },
+  { "id": 13, "activity": "Ship personal project MVP" },
+  { "id": 21, "activity": "Finish API integration" }
 ]
 
